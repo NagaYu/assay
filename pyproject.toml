@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "assay"
+version = "0.1.0"
+description = "Assay: per-request internal receipts for model-substitution detection"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Yuta Nagao" }]
+keywords = ["model-substitution", "llm-verification", "e-value", "sequential-testing", "trustworthy-ml"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+]
+dependencies = [
+    "torch>=2.1",
+    "transformers>=4.40",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "cryptography>=41.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+cuda = ["bitsandbytes>=0.43"]
+
+[project.urls]
+Homepage = "https://github.com/NagaYu/assay"
+Repository = "https://github.com/NagaYu/assay"
+
+[tool.setuptools]
+packages = ["assay", "benchmarks"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

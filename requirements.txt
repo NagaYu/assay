@@ -1,0 +1,13 @@
+# Core dependencies for Assay (see pyproject.toml for the authoritative list).
+# CPU-only wheels are sufficient; a GPU is optional (see the `cuda` extra).
+torch>=2.1
+transformers>=4.40
+numpy>=1.24
+matplotlib>=3.7
+cryptography>=41.0
+
+# Testing
+pytest>=7.0
+
+# Optional (GPU only): real INT8 via bitsandbytes LLM.int8()
+# bitsandbytes>=0.43
