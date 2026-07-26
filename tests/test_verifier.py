@@ -54,7 +54,7 @@ def test_honest_no_false_alarm(models, sketcher, prompts, calibrated_verifier):
 
 
 def test_detect_size_substitution(models, sketcher, prompts, calibrated_verifier):
-    """[Claim: unforgeable] Size substitution (4 layers -> 2) alarms within a few requests."""
+    """[Claim: unevadable] Size substitution (4 layers -> 2) alarms within a few requests."""
     server = make_server(models, sketcher, "cheat", mp_key="size", seed=6)
     audit = EValueAudit(alpha=0.01)
     for i in range(10):
@@ -84,8 +84,13 @@ def test_detect_quantization(models, sketcher, prompts, calibrated_verifier):
     assert audit.alarmed and audit.t_alarm <= 10, f"zs={zs}"
 
 
-def test_verifier_cost_sublinear(models, sketcher, prompts, calibrated_verifier):
-    """[Claim: low-cost] The verification layer-token cost is strictly smaller than a full recompute."""
+def test_verifier_cost_below_full_recompute(models, sketcher, prompts, calibrated_verifier):
+    """[Claim: low-cost] The verification layer-token cost is strictly smaller than a full recompute.
+
+    Note what is *not* claimed: the saving is a constant factor (blocks above the drawn
+    layer are skipped, the sequence is cut at the last inspected position, the lm_head
+    never runs), not an asymptotic improvement -- every block below the drawn layer runs.
+    """
     server = make_server(models, sketcher, "honest", seed=8)
     ratios = []
     for i in range(12):

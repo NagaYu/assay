@@ -28,7 +28,7 @@ def test_evalue_anytime_validity_monte_carlo():
 
 
 def test_evalue_power_on_sparse_cheating():
-    """[Claim: unforgeable] Even when only 10% of requests cheat, evidence accumulates monotonically
+    """[Claim: unevadable] Even when only 10% of requests cheat, evidence accumulates monotonically
     (statistical version of power against randomized substitution)."""
     rng = np.random.default_rng(1)
     audit = EValueAudit(alpha=0.01)
@@ -48,7 +48,7 @@ def test_sprt_updates():
 
 
 def test_random_substitution_detected_by_assay(models, sketcher, prompts, calibrated_verifier):
-    """[Claim: unforgeable] Even for randomized substitution that uses the real model with prob p=0.9,
+    """[Claim: unevadable] Even for randomized substitution that uses the real model with prob p=0.9,
     all-request verification detects it from just the cheating fraction."""
     server = make_server(models, sketcher, "random", seed=30)
     audit = EValueAudit(alpha=0.01)
@@ -63,7 +63,7 @@ def test_random_substitution_detected_by_assay(models, sketcher, prompts, calibr
 
 
 def test_evasive_server_fools_blackbox_but_not_assay(models, sketcher, prompts, calibrated_verifier):
-    """[Claim: unforgeable (headline)] A canary-detecting evasive server completely fools the
+    """[Claim: unevadable (headline)] A canary-detecting evasive server completely fools the
     black-box audit, but is caught by Assay within a few requests."""
     canaries = prompts[:4]
     refs = reference_outputs(models["M"], canaries, gen_len=8)

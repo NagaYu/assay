@@ -11,7 +11,7 @@ from tests.conftest import make_server
 
 
 def test_signature_roundtrip_and_tamper(models, sketcher, prompts, calibrated_verifier):
-    """[Claim: unforgeable] A correct receipt passes signature verification, and flipping a
+    """[Claim: unevadable] A correct receipt passes signature verification, and flipping a
     single byte of the sketch makes it fail (mock TEE signature)."""
     server = make_server(models, sketcher, "honest", seed=20)
     p = prompts[0]
@@ -25,7 +25,7 @@ def test_signature_roundtrip_and_tamper(models, sketcher, prompts, calibrated_ve
 
 
 def test_replay_rejected(models, sketcher, prompts, calibrated_verifier):
-    """[Claim: unforgeable] Reusing a past honest receipt for a different request (replay) is
+    """[Claim: unevadable] Reusing a past honest receipt for a different request (replay) is
     rejected by the prompt/output hash binding."""
     server = make_server(models, sketcher, "honest", seed=21)
     p0, p1 = prompts[0], prompts[1]
@@ -36,8 +36,32 @@ def test_replay_rejected(models, sketcher, prompts, calibrated_verifier):
     assert verdict.p <= 1e-12  # becomes maximal evidence immediately in the sequential audit
 
 
+def test_receipt_bound_to_request_id(models, sketcher, prompts, calibrated_verifier):
+    """[Claim: unevadable] One receipt cannot cover several served responses.
+
+    Hash binding alone leaves a receipt valid for any request with a byte-identical
+    (prompt, output) pair -- greedy decoding makes those common. Passing the request id
+    the client actually saw closes that reuse, so 100% coverage means 100% of *responses*,
+    not 100% of distinct (prompt, output) pairs.
+    """
+    server = make_server(models, sketcher, "honest", seed=23)
+    p = prompts[3]
+    first = server.handle("bind-0", p)
+    # Same prompt, same greedy output -> the old receipt still passes every hash check.
+    replayed = calibrated_verifier.verify(first.receipt, p, first.output_ids)
+    assert replayed.valid_receipt
+    # ...but not once it is bound to the id of the request being served.
+    rebound = calibrated_verifier.verify(first.receipt, p, first.output_ids,
+                                         expected_request_id="bind-1")
+    assert not rebound.valid_receipt and rebound.reason == "request_id_mismatch"
+    # The genuine pairing still verifies.
+    ok = calibrated_verifier.verify(first.receipt, p, first.output_ids,
+                                    expected_request_id="bind-0")
+    assert ok.valid_receipt
+
+
 def test_position_derivation_enforced(models, sketcher, prompts, calibrated_verifier):
-    """[Claim: unforgeable] A receipt where the provider re-picked the inspection positions is
+    """[Claim: unevadable] A receipt where the provider re-picked the inspection positions is
     rejected by the PRF re-derivation check."""
     server = make_server(models, sketcher, "honest", seed=22)
     p = prompts[2]

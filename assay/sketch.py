@@ -8,7 +8,7 @@ Protocol (shared between provider and verifier, public):
   - Each response is turned into a receipt (projected sketch, sign bits, top ranks)
     and signed (mocking a TEE signature).
 
-[Claim: unforgeable] The inspected token positions are a deterministic PRF keyed
+[Claim: unevadable] The inspected token positions are a deterministic PRF keyed
 by request_id, so the provider cannot tell which request is "the audited one" --
 every request carries a receipt, and all of them are verifiable after the fact.
 Evasion by canary-detection is structurally impossible. (The set of layers is a
@@ -52,7 +52,13 @@ class SketchConfig:
 
     @staticmethod
     def auto_layers(n_layer: int, count: int = 4) -> Tuple[int, ...]:
-        """Choose inspection layers spread from shallow to deep by depth (avoid the final ln_f layer)."""
+        """Choose inspection layers spread from shallow to deep by depth (avoid the final ln_f layer).
+
+        [Claim: unevadable] Spreading the layer set means a substitute model has to match
+        M at several depths at once, not just at one convenient point in the stack.
+        [Claim: low-cost] Layers are capped below the last one so the verifier's truncated
+        forward can usually stop early instead of running the whole stack.
+        """
         if n_layer < count + 1:
             return tuple(range(1, n_layer))
         idxs = np.linspace(n_layer * 0.25, n_layer - 1, count)
@@ -64,6 +70,11 @@ class SketchConfig:
 # ---------------------------------------------------------------------------
 
 def token_sha(ids: Sequence[int]) -> str:
+    """Hash a token sequence for receipt binding.
+
+    [Claim: unevadable] Binding the prompt and output token hashes into the signed
+    receipt is what makes replay and post-hoc substitution of a receipt detectable.
+    """
     return hashlib.sha256(np.asarray(list(ids), dtype=np.int64).tobytes()).hexdigest()
 
 
@@ -94,7 +105,7 @@ class Receipt:
     def canonical_bytes(self) -> bytes:
         """Canonical byte string to sign (binds every field except the signature).
 
-        [Claim: unforgeable] Because it binds the prompt/output hashes and the
+        [Claim: unevadable] Because it binds the prompt/output hashes and the
         request_id, "replaying an old honest receipt" or "swapping fields after
         the fact" fail signature verification
         (tests/test_sketch.py::test_replay_rejected).
@@ -135,9 +146,11 @@ class HmacSigner:
         self._key = key
 
     def sign(self, data: bytes) -> str:
+        """Sign the receipt bytes with the shared key (stands in for a TEE attestation)."""
         return hmac_mod.new(self._key, data, hashlib.sha256).hexdigest()
 
     def verify(self, data: bytes, signature: str) -> bool:
+        """Constant-time check that the receipt bytes were not altered after signing."""
         return hmac_mod.compare_digest(self.sign(data), signature)
 
 
@@ -153,6 +166,7 @@ class Ed25519Signer:
         self._pk = self._sk.public_key()
 
     def sign(self, data: bytes) -> str:
+        """Sign with the private key; the verifier only ever needs the public half."""
         return base64.b64encode(self._sk.sign(data)).decode()
 
     def verify(self, data: bytes, signature: str) -> bool:
@@ -196,7 +210,7 @@ class ActivationSketcher:
     def select_positions(self, request_id: str, prompt_len: int, total_len: int) -> Tuple[int, ...]:
         """Deterministically choose inspection positions in the response-token region from PRF(seed, request_id).
 
-        [Claim: unforgeable] Positions are request-specific and re-derivable -- a
+        [Claim: unevadable] Positions are request-specific and re-derivable -- a
         provider that re-picks positions to sketch only "convenient" places is
         rejected at verification.
         """
@@ -210,7 +224,12 @@ class ActivationSketcher:
     # -- sketch computation --------------------------------------------------
 
     def sketch_vector(self, h: torch.Tensor, layer: int) -> np.ndarray:
-        """Project one (layer, position) hidden state h (H,) into a k-dim sketch."""
+        """Project one (layer, position) hidden state h (H,) into a k-dim sketch.
+
+        [Claim: low-cost] The receipt carries k=32 floats per inspected point instead of
+        the full hidden state (H=768 for gpt2), and the projection is re-derived from the
+        seed, so nothing but the sketch has to be transmitted or stored.
+        """
         R = self.projection(layer, h.shape[-1])
         s = (h.to(torch.float32) @ R).cpu().numpy()
         return s.astype(np.float32)
@@ -240,7 +259,7 @@ class ActivationSketcher:
         cheaper model with a different layer count attempts a "best-effort"
         forgery here (e.g. proportional mapping) -- see server.py.
 
-        [Claim: unforgeable] The receipt is computed from whatever model actually
+        [Claim: unevadable] The receipt is computed from whatever model actually
         ran; a receipt built from M''s activations cannot match M's recomputation.
         """
         layers = list(layers if layers is not None else self.config.layers)
@@ -268,7 +287,14 @@ class ActivationSketcher:
         hidden_states: Sequence[torch.Tensor],
         layer_map=None,
     ) -> Receipt:
-        """Issue one signed receipt for a response (mocking the provider side / inside a TEE)."""
+        """Issue one signed receipt for a response (mocking the provider side / inside a TEE).
+
+        [Claim: unevadable] Every response gets a receipt -- there is no sampling step and
+        no way for the provider to tell an audited request from an ordinary one, so
+        canary-detection evasion has nothing to detect. The receipt is computed from the
+        activations of whichever model actually ran, which is exactly what gives the
+        cheating request away.
+        """
         prompt_len = len(prompt_ids)
         total_len = prompt_len + len(output_ids)
         positions = self.select_positions(request_id, prompt_len, total_len)

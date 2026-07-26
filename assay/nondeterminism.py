@@ -41,6 +41,7 @@ class NondeterminismModel:
         self._gen = torch.Generator().manual_seed(seed)
 
     def _perturb(self, h: torch.Tensor) -> torch.Tensor:
+        """Add noise scaled to the tensor's own spread, so the jitter is relative, not absolute."""
         if self.sigma_rel <= 0:
             return h
         noise = torch.randn(h.shape, generator=self._gen, dtype=torch.float32)
@@ -54,6 +55,10 @@ class NondeterminismModel:
         real nondeterminism, it accumulates with depth). It is applied only on the
         provider's generation / receipt path; the verifier recomputes cleanly, and
         that gap is absorbed by calibration.
+
+        [Claim: nondeterminism-robust] This is the adversary-free failure mode Assay has to
+        survive: an honest provider whose activations simply do not reproduce bit-for-bit.
+        Every honest number in the benchmark is produced with these hooks attached.
         """
         handles: List[torch.utils.hooks.RemovableHandle] = []
 

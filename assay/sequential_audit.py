@@ -4,7 +4,7 @@ Each request's p-value (from the verifier's calibrated z-value) is turned into a
 anytime-valid e-process and accumulated. An alarm fires when the product crosses
 the 1/alpha threshold ("substitution present").
 
-[Claim: unforgeable] Even under probabilistic substitution (M with prob p),
+[Claim: unevadable] Even under probabilistic substitution (M with prob p),
 evidence accumulates every time a cheating request slips in -- unlike sampling
 audits, there is no "the audit happened not to hit it" escape hatch (every request
 contributes to the e-process).
@@ -51,16 +51,18 @@ class EValueAudit:
 
     @property
     def threshold(self) -> float:
+        """Alarm level log(1/alpha): by Ville's inequality, crossing it under H0 has probability <= alpha."""
         return math.log(1.0 / self.alpha)
 
     @property
     def alarmed(self) -> bool:
+        """Whether the evidence has already crossed the threshold at some point."""
         return self.t_alarm is not None
 
     def update(self, p: float) -> AuditState:
         """Ingest one request's p-value and advance the cumulative log e-value.
 
-        [Claim: unforgeable] Every request feeds the same e-process, so sparse
+        [Claim: unevadable] Every request feeds the same e-process, so sparse
         cheating (randomized substitution) still accumulates evidence monotonically
         in expectation -- there is no subset of traffic the provider can cheat on
         "for free".
@@ -99,16 +101,18 @@ class SPRTAudit:
 
     @property
     def threshold(self) -> float:
+        """Wald's upper stopping boundary log((1-beta)/alpha)."""
         return math.log((1.0 - self.beta) / self.alpha)
 
     @property
     def alarmed(self) -> bool:
+        """Whether the evidence has already crossed the threshold at some point."""
         return self.t_alarm is not None
 
     def update(self, z: float) -> AuditState:
         """Advance the log-likelihood ratio with one request's z-value.
 
-        [Claim: unforgeable] Same all-request coverage as the e-value audit; kept as
+        [Claim: unevadable] Same all-request coverage as the e-value audit; kept as
         a parametric contrast so the headline result does not depend on one
         particular sequential test.
         """

@@ -13,17 +13,17 @@
   "honest": {
     "fpr_per_request_z3": 0.0,
     "sequential_false_alarm": 0.0,
-    "assay_final_log_e": -3.8255692125751097
+    "assay_final_log_e": -5.014551493891885
   },
   "queries_to_detection": {
     "size": {
       "assay": 1.0,
-      "bb": 12.0,
+      "bb": 30.0,
       "bb_dense": 2
     },
     "quant": {
       "assay": 1.0,
-      "bb": 26.0,
+      "bb": 19.0,
       "bb_dense": 2
     },
     "random": {
@@ -45,7 +45,7 @@
   },
   "distribution_bb_queries": {
     "size": 5,
-    "quant": 5,
+    "quant": 10,
     "random": null,
     "evasive": 5
   },
@@ -54,13 +54,13 @@
     "bb_interleaved": 0.1
   },
   "verifier_cost": {
-    "layer_token_ratio": 0.635888830372526,
-    "wall_ratio": 0.7720137747522089,
-    "mean_verify_wall_s": 0.02955230949327029,
-    "mean_full_wall_s": 0.038279510624995794
+    "layer_token_ratio": 0.633896081650837,
+    "wall_ratio": 0.7161306945316419,
+    "mean_verify_wall_s": 0.02600018017307891,
+    "mean_full_wall_s": 0.03630647362501804
   },
   "invariants_honest": {
-    "sign": 0.999609375,
-    "rank": 0.9967592592592591
+    "sign": 0.9982421875,
+    "rank": 0.9958333333333332
   }
 }

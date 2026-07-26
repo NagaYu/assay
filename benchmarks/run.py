@@ -12,6 +12,12 @@ coverage (fraction of responses inspected; Assay=100%, BB=audit query rate).
 Examples:
   python benchmarks/run.py                        # gpt2 pair (needs HF cache, ~10 min on CPU)
   python benchmarks/run.py --pair tiny --quick    # randomly-initialized tiny pair (~1 min)
+
+Artifacts: only the canonical run (full gpt2 pair) owns `figures/`,
+`benchmarks/results.{json,md}` and the README table. Smaller smoke runs write to
+`figures/<tag>/` and `benchmarks/results.<tag>.{json,md}` so they cannot silently
+overwrite the numbers the README cites. Output paths are resolved relative to the
+repository root, so the script can be launched from any working directory.
 """
 
 from __future__ import annotations
@@ -27,7 +33,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from assay.hooks import load_int8_model, load_model, load_tokenizer, num_layers, tiny_random_pair
 from assay.nondeterminism import NondeterminismModel
@@ -68,12 +75,17 @@ _CANARY_TOPICS = [
 
 
 def build_prompts(tokenizer, max_tokens: int) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
-    """Build user-traffic prompts and the auditor's canary prompts (a distinct family)."""
+    """Build user-traffic prompts and the auditor's canary prompts (a distinct family).
+
+    Every (topic, template) pair is generated so the pool can be split into disjoint
+    calibration and evaluation halves (see `split_prompts`) -- the honest false-positive
+    rate has to be measured on prompts the tolerance band was not calibrated on.
+    """
     user, canary = [], []
-    for i, topic in enumerate(_TOPICS):
-        text = _TEMPLATES[i % len(_TEMPLATES)].format(topic)
-        ids = tokenizer(text, return_tensors="pt").input_ids[0][:max_tokens]
-        user.append(ids)
+    for topic in _TOPICS:
+        for template in _TEMPLATES:
+            ids = tokenizer(template.format(topic), return_tensors="pt").input_ids[0][:max_tokens]
+            user.append(ids)
     for topic in _CANARY_TOPICS:
         text = f"Describe {topic}."
         ids = tokenizer(text, return_tensors="pt").input_ids[0][:max_tokens]
@@ -86,6 +98,16 @@ def build_random_prompts(vocab: int, n_user: int, n_canary: int, max_tokens: int
     user = [torch.tensor(rng.integers(0, vocab, size=max_tokens), dtype=torch.long) for _ in range(n_user)]
     canary = [torch.tensor(rng.integers(0, vocab, size=max_tokens), dtype=torch.long) for _ in range(n_canary)]
     return user, canary
+
+
+def split_prompts(prompts: List[torch.Tensor]) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+    """Split the prompt pool into disjoint calibration and evaluation halves (interleaved).
+
+    Calibrating the tolerance band on the same prompts the honest scenario is then scored
+    on would make the reported false-positive rate optimistic (in-sample). Interleaving
+    keeps topic and template diversity on both sides.
+    """
+    return prompts[0::2], prompts[1::2]
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +212,9 @@ def run_scenario(ctx: dict, name: str, trial: int, n_requests: int, collect_full
         else:
             prompt = ctx["prompts"][order[t % len(order)]]
         resp = server.handle(f"{name}-{trial}-{t}", prompt)
-        verdict = verifier.verify(resp.receipt, prompt, resp.output_ids)
+        # Bind the receipt to the id of the request being served (see Verifier.structural_check).
+        verdict = verifier.verify(resp.receipt, prompt, resp.output_ids,
+                                  expected_request_id=f"{name}-{trial}-{t}")
         audit.update(verdict.p)
         sprt.update(verdict.z)
         rec["assay_history"].append(audit.log_e)
@@ -255,8 +279,10 @@ def setup(args) -> dict:
 
         fake_quantize_int8_(M_quant)
         tok = None
-        prompts, canaries = build_random_prompts(M.config.vocab_size, 24, 12, args.prompt_len, seed=42)
+        prompts, canaries = build_random_prompts(M.config.vocab_size, 48, 12, args.prompt_len, seed=42)
 
+    calib_prompts, eval_prompts = split_prompts(prompts)
+    print(f"[setup] prompts: {len(calib_prompts)} calibration / {len(eval_prompts)} evaluation (disjoint)")
     n_layer = num_layers(M)
     cfg = SketchConfig(layers=SketchConfig.auto_layers(n_layer), n_positions=6, sketch_dim=32)
     signer = HmacSigner(b"assay-demo-key-0123456789abcdef!")
@@ -268,7 +294,7 @@ def setup(args) -> dict:
     srv_cal = ProviderServer(M, None, sketcher, mode="honest", jitter=jitter, gen_len=args.gen_len, seed=999)
     verifier = Verifier(M, sketcher, signer)
     t0 = time.time()
-    calib = Calibrator().fit(verifier, srv_cal, prompts, n=args.n_cal)
+    calib = Calibrator().fit(verifier, srv_cal, calib_prompts, n=args.n_cal)
     print(f"[setup] calibration n={args.n_cal} took {time.time()-t0:.1f}s "
           f"mu={ {k: round(v, 2) for k, v in calib.mu.items()} }")
 
@@ -288,7 +314,9 @@ def setup(args) -> dict:
 
     return dict(
         M=M, models={"size": M_size, "quant": M_quant}, tokenizer=tok,
-        prompts=prompts, canaries=canaries, refs=refs, sketcher=sketcher, signer=signer,
+        # Scenarios run on the evaluation half only; the band was calibrated on the other half.
+        prompts=eval_prompts, calib_prompts=calib_prompts,
+        canaries=canaries, refs=refs, sketcher=sketcher, signer=signer,
         calib=calib, q0=q0, sigma=args.sigma, gen_len=args.gen_len,
         alpha=args.alpha, audit_rate=args.audit_rate, p_honest=args.p_honest,
     )
@@ -313,11 +341,23 @@ def main() -> None:
     ap.add_argument("--sigma", type=float, default=3e-4)
     ap.add_argument("--audit-rate", type=float, default=0.1)
     ap.add_argument("--p-honest", type=float, default=0.9)
-    ap.add_argument("--outdir", default="figures")
+    ap.add_argument("--outdir", default=None,
+                    help="figure output dir (default: figures/ for the canonical run, "
+                         "figures/<tag>/ otherwise)")
     ap.add_argument("--quick", action="store_true", help="reduced settings (n=40, trials=2, n_cal=24)")
     args = ap.parse_args()
     if args.quick:
         args.n, args.trials, args.n_cal, args.n_bb = 40, 2, 24, 60
+
+    # Only the canonical configuration (full gpt2 pair) owns the artifacts the README
+    # cites; smaller smoke runs write beside them instead of overwriting them.
+    canonical = args.pair == "gpt2" and not args.quick
+    tag = f"{args.pair}{'-quick' if args.quick else ''}"
+    if args.outdir is None:
+        args.outdir = "figures" if canonical else os.path.join("figures", tag)
+    if not os.path.isabs(args.outdir):
+        args.outdir = os.path.join(ROOT, args.outdir)
+    results_stem = os.path.join(ROOT, "benchmarks", "results" if canonical else f"results.{tag}")
 
     torch.manual_seed(0)
     os.makedirs(args.outdir, exist_ok=True)
@@ -421,7 +461,7 @@ def main() -> None:
     figures.fig_invariance(inv, os.path.join(args.outdir, "fig_invariance.png"))
     figures.fig_queries(qtd, args.n, os.path.join(args.outdir, "fig_queries.png"))
 
-    with open(os.path.join("benchmarks", "results.json"), "w") as f:
+    with open(f"{results_stem}.json", "w") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
     lines = [
@@ -446,11 +486,13 @@ def main() -> None:
         f"- Coverage: Assay 100% / BB {args.audit_rate:.0%}",
     ]
     lines.append(f"- Config: pair={args.pair}, n={args.n}/scenario, trials={args.trials}, alpha={args.alpha} (CPU)")
-    with open(os.path.join("benchmarks", "results.md"), "w") as f:
+    with open(f"{results_stem}.md", "w") as f:
         f.write("\n".join(lines) + "\n")
-    update_readme_table("\n".join(lines))
+    if canonical:
+        update_readme_table("\n".join(lines), os.path.join(ROOT, "README.md"))
     print("\n".join(lines))
-    print(f"[done] figures -> {args.outdir}/, summary -> benchmarks/results.json")
+    print(f"[done] figures -> {args.outdir}/, summary -> {results_stem}.json"
+          + ("" if canonical else "  (non-canonical run: README table left untouched)"))
 
 
 def update_readme_table(table_md: str, readme_path: str = "README.md") -> None:

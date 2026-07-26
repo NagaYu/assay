@@ -14,7 +14,7 @@ Attacker forgery capabilities modeled here:
 What the attacker cannot do: learn M's activations without running M (if it could,
 it could just serve M) -- this is the crux of Assay's security.
 
-[Claim: unforgeable] The evasive mode completely defeats canary-based external audits,
+[Claim: unevadable] The evasive mode completely defeats canary-based external audits,
 but Assay puts a receipt on ordinary user requests too, so evasion is structurally
 impossible.
 """
@@ -84,6 +84,11 @@ class ProviderServer:
         evasive: exact canary match detected -> answer with M (looks honest to the external audit).
         random:  M with probability p_honest (dilutes a sampling audit's expected
                  detection time by a factor of 1/(1-p_honest)).
+
+        [Claim: unevadable] Both modes are aimed squarely at sampling audits, and both work
+        against one: evasion makes canary queries useless, randomization makes them slow.
+        Neither helps against per-request receipts, because the decision this method makes
+        is recorded in the receipt of the very request it was made for.
         """
         if self.mode == "honest":
             return self.model_m, "M"
@@ -119,6 +124,10 @@ class ProviderServer:
         Identity when honest (M). An attacker using an M' with a different layer
         count offers the "most plausibly corresponding" layer via a proportional
         mapping (a best-effort forgery).
+
+        [Claim: unevadable] This is deliberately the attacker's *best* move, so the
+        detection result is not an artifact of a strawman: even when M' hands over the
+        layer that should look most like the claimed one, the sketches do not agree.
         """
         n_claim = num_layers(self.model_m)
         n_actual = num_layers(model)
@@ -134,7 +143,7 @@ class ProviderServer:
         The receipt is computed from the hidden_states of the model that actually
         ran -- if M' ran, M's activations are unknowable, so a "correct receipt"
         cannot be produced.
-        [Claim: unforgeable] This is the basis of all-request verification security.
+        [Claim: unevadable] This is the basis of all-request verification security.
         """
         model, used = self._decide(prompt_ids)
         import contextlib

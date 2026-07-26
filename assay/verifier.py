@@ -1,4 +1,4 @@
-"""Verifier: with M's weights, recompute only a slice of each receipt at sublinear cost and check it.
+"""Verifier: with M's weights, recompute only a slice of each receipt and check it.
 
 Verification flow (one request):
   1. Structural check: prompt/output hashes, PRF-derived positions, layer set, signature.
@@ -10,12 +10,15 @@ Verification flow (one request):
   4. Recompute the sketch with the same JL projection and z-score it against the
      calibrated (jitter-calibrated) tolerance band.
 
-[Claim: low-cost] The executed layer-tokens (blocks run x tokens processed), compared to a
-full recompute, are sublinear (measured layer-token ratio ~0.64 at the default gpt2 settings).
-Only O(1) layers are *inspected*, but the truncated forward runs every block up to the drawn
-layer, so the recompute cost scales with the depth of the drawn layer -- ~2/3 of full in
-expectation.
-[Claim: unforgeable] Which layer is checked is the verifier's secret randomness -- the
+[Claim: low-cost] The executed layer-tokens (blocks run x tokens processed) are a *fraction*
+of a full recompute -- measured layer-token ratio ~0.63, wall-clock ~0.72, at the default
+gpt2 settings. Be precise about what this is and is not: only O(1) layers and O(1) positions
+are *inspected*, but the truncated forward still runs every block up to the drawn layer, so
+the recompute cost scales with that layer's depth and is ~2/3 of full in expectation -- a
+constant-factor saving, not an asymptotic one. The savings come from three places: the blocks
+above the drawn layer are skipped, the sequence is cut at the last inspected position, and the
+lm_head (the vocab-sized matmul) is never run at all.
+[Claim: unevadable] Which layer is checked is the verifier's secret randomness -- the
 provider cannot forge "only the layers that won't be checked". Every request is in scope.
 """
 
@@ -98,6 +101,12 @@ class Calibration:
     honest_rank_overlap: float = 1.0
 
     def zscore(self, layer: int, log_dist: float) -> float:
+        """Standardize a log-distance against this layer's honest band.
+
+        [Claim: nondeterminism-robust] mu/sigma come from honest traffic *with* jitter, so
+        benign numerical noise sits at z ~ 0 by construction. The sigma floor keeps a layer
+        whose honest spread is tiny from turning that noise into large z values.
+        """
         mu = self.mu[layer]
         sd = max(self.sigma[layer], _SIGMA_FLOOR)
         return (log_dist - mu) / sd
@@ -107,6 +116,13 @@ class Calibrator:
     """Runs honest+jitter traffic and calibrates the tolerance band for every inspection layer (one-time preprocessing)."""
 
     def fit(self, verifier: "Verifier", server, prompts: Sequence[torch.Tensor], n: int = 64) -> Calibration:
+        """Measure the honest log-distance band per layer by running honest traffic with jitter.
+
+        [Claim: nondeterminism-robust] This is where benign nondeterminism is absorbed: the
+        band is fit on traffic that already contains it. Fit this on prompts that are
+        disjoint from the ones later scored, or the false-positive rate comes out optimistic
+        (benchmarks/run.py splits the pool for exactly this reason).
+        """
         per_layer: Dict[int, List[float]] = {l: [] for l in verifier.sketcher.config.layers}
         sign_vals, rank_vals = [], []
         for i in range(n):
@@ -149,6 +165,7 @@ class VerdictRecord:
 
     @property
     def cost_ratio(self) -> float:
+        """[Claim: low-cost] Executed layer-tokens divided by a full recompute's (< 1)."""
         return self.cost_layer_tokens / max(self.full_layer_tokens, 1)
 
 
@@ -171,7 +188,7 @@ class Verifier:
         self.sketcher = sketcher
         self.signer = signer
         self.calibration = calibration
-        # The inspection layer is drawn with randomness kept secret from the provider [Claim: unforgeable]
+        # The inspection layer is drawn with randomness kept secret from the provider [Claim: unevadable]
         self._rng = np.random.default_rng(verifier_seed)
         self.n_layer = num_layers(model_m)
 
@@ -217,12 +234,25 @@ class Verifier:
 
     # -- structural check ----------------------------------------------------
 
-    def structural_check(self, receipt: Receipt, prompt_ids: torch.Tensor, output_ids: Sequence[int]) -> Tuple[bool, str]:
+    def structural_check(
+        self,
+        receipt: Receipt,
+        prompt_ids: torch.Tensor,
+        output_ids: Sequence[int],
+        expected_request_id: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """Check the signature, hash binding, and protocol derivation (layers / positions).
 
-        [Claim: unforgeable] Rejects all three forgery families here: replay
+        [Claim: unevadable] Rejects all three forgery families here: replay
         (reusing an old receipt), tampering, and "sketch only convenient positions".
+
+        Pass `expected_request_id` (the id the client actually saw) to also bind the
+        receipt to *this* request. Without it, a receipt stays valid for any request
+        with a byte-identical (prompt, output) pair, so one attested response could
+        cover many served ones -- which would poke a hole in the 100%-coverage claim.
         """
+        if expected_request_id is not None and receipt.request_id != expected_request_id:
+            return False, "request_id_mismatch"
         p_ids = [int(x) for x in prompt_ids.flatten().tolist()]
         if receipt.prompt_sha != token_sha(p_ids):
             return False, "prompt_hash_mismatch"
@@ -242,15 +272,24 @@ class Verifier:
 
     # -- verification --------------------------------------------------------
 
-    def verify(self, receipt: Receipt, prompt_ids: torch.Tensor, output_ids: Sequence[int]) -> VerdictRecord:
+    def verify(
+        self,
+        receipt: Receipt,
+        prompt_ids: torch.Tensor,
+        output_ids: Sequence[int],
+        expected_request_id: Optional[str] = None,
+    ) -> VerdictRecord:
         """Verify one request and return a verdict with z-value, p-value, and cost measurement.
 
-        [Claim: low-cost] cost_layer_tokens / full_layer_tokens is the sublinear cost ratio.
+        [Claim: low-cost] cost_layer_tokens / full_layer_tokens is the cost ratio against a
+        full recompute (< 1 by construction; ~0.63 measured on the default gpt2 settings).
         [Claim: nondeterminism-robust] z is standardized against the calibrated (jitter-included) tolerance band.
+        [Claim: unevadable] `expected_request_id`, when supplied, binds the receipt to this
+        exact request so one receipt cannot cover several served responses.
         """
         total_len = len(prompt_ids.flatten()) + len(list(output_ids))
         full_lt = self.n_layer * total_len
-        ok, reason = self.structural_check(receipt, prompt_ids, output_ids)
+        ok, reason = self.structural_check(receipt, prompt_ids, output_ids, expected_request_id)
         if not ok:
             return VerdictRecord(
                 request_id=receipt.request_id, valid_receipt=False, reason=reason,

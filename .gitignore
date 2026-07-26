@@ -13,3 +13,10 @@ venv/
 
 # HF cache (models are downloaded at runtime)
 .cache/
+build/
+dist/
+
+# Non-canonical benchmark artifacts (see benchmarks/run.py)
+figures/*/
+benchmarks/results.*.json
+benchmarks/results.*.md

@@ -72,10 +72,12 @@ def layer_list(model: nn.Module) -> nn.ModuleList:
 
 
 def num_layers(model: nn.Module) -> int:
+    """Number of transformer blocks (the denominator of the verifier's cost ratio)."""
     return len(layer_list(model))
 
 
 def hidden_size(model: nn.Module) -> int:
+    """Model hidden dimension H (the input width of the JL projection)."""
     return int(model.config.hidden_size)
 
 
@@ -95,6 +97,7 @@ def load_model(name: str, device: str = "cpu", dtype: torch.dtype = torch.float3
 
 
 def load_tokenizer(name: str):
+    """Load the matching tokenizer, with a pad token filled in when the model lacks one."""
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(name)
@@ -189,7 +192,7 @@ def tiny_random_pair(
 def prf_int(*parts: object, nbytes: int = 8) -> int:
     """SHA-256-based deterministic PRF. Used for projection-matrix seeds and position selection.
 
-    [Claim: unforgeable] The *token positions* that get sketched, and the
+    [Claim: unevadable] The *token positions* that get sketched, and the
     projection-matrix seeds, are derived deterministically from the protocol
     (public seed + request_id), so the provider cannot pick "positions that
     won't be inspected" to cheat. (The set of *layers* is a fixed public protocol
