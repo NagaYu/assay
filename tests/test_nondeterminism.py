@@ -27,8 +27,16 @@ def _points(sketcher, model, ids, jitter=None):
 
 def test_invariants_stable_under_jitter_sensitive_to_swap(models, sketcher):
     """[Claim: nondeterminism-robust] Feature movement separates cleanly in the order
-    benign jitter << quantization << substitution. The coarse invariants (sign / rank) stay put
-    under jitter, start moving under quantization, and collapse to near-zero correlation under substitution."""
+    benign jitter << quantization << substitution.
+
+    The continuous sketch carries the graded signal; the coarse invariants (sign / rank)
+    stay put under jitter and collapse under substitution. Note what is deliberately *not*
+    asserted: that the coarse invariants move under quantization. Whether an INT8 shift is
+    large enough to reorder the top-k coordinates is platform-dependent (it does on arm64
+    macOS, it does not on x86-64 Linux CI), and it does not need to -- quantization is
+    caught by the continuous distance and the calibrated band, which is what
+    test_verifier.py::test_detect_quantization checks end to end.
+    """
     ids = torch.arange(12) % 50
     sk_clean, signs_clean, ranks_clean = _points(sketcher, models["M"], ids)
 
@@ -45,12 +53,11 @@ def test_invariants_stable_under_jitter_sensitive_to_swap(models, sketcher):
         rel_j = max(rel_j, reldist(sk_j))
     assert rel_j < 2e-3
 
-    # (2) Quantization: moves significantly more than jitter (continuous distance >3x, ranks start moving)
+    # (2) Quantization: the continuous sketch moves far more than under jitter
     sk_q, signs_q, ranks_q = _points(sketcher, models["quant"], ids)
     rel_q = reldist(sk_q)
     rq = rank_overlap(ranks_clean, ranks_q)
     assert rel_q > 3 * rel_j
-    assert rq < 0.995  # the rank invariant starts to move under quantization
 
     # (3) Size substitution: collapses to near-zero correlation (sign agreement ~0.5)
     sk_s, signs_s, ranks_s = _points(sketcher, models["size"], ids)
@@ -58,8 +65,9 @@ def test_invariants_stable_under_jitter_sensitive_to_swap(models, sketcher):
     assert ss < 0.75
     assert rank_overlap(ranks_clean, ranks_s) < 0.6
     assert reldist(sk_s) > 10 * rel_q
-    # Sign-agreement ordering: jitter >= quantization > substitution
+    # Ordering that must hold on any platform: jitter >= quantization > substitution
     assert sign_agreement(signs_clean, signs_q) >= ss + 0.2
+    assert rq > rank_overlap(ranks_clean, ranks_s)
 
 
 def test_jitter_magnitude_is_benign(models):
