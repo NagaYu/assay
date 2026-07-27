@@ -125,10 +125,22 @@ def fake_quantize_int8_(model: nn.Module) -> nn.Module:
     except ImportError:
         pass
 
+    # Skip the embedding table. GPT-2 ties lm_head.weight to wte.weight, so quantizing
+    # lm_head as "just another Linear" silently quantizes the embeddings too -- something
+    # weight-only INT8 serving (bitsandbytes LLM.int8()) does not do. Left in, it shifts
+    # activations from the very first layer and makes the quantization scenario look
+    # easier to detect than it is.
+    skip_ptrs = set()
+    for embedding in (model.get_input_embeddings(), model.get_output_embeddings()):
+        if embedding is not None and getattr(embedding, "weight", None) is not None:
+            skip_ptrs.add(embedding.weight.data_ptr())
+
     with torch.no_grad():
         for module in model.modules():
             if isinstance(module, targets):
                 w = module.weight.data
+                if w.data_ptr() in skip_ptrs:
+                    continue
                 # Linear: (out, in) -> per row / Conv1D: (in, out) -> per column
                 dim = 1 if isinstance(module, nn.Linear) else 0
                 scale = w.abs().amax(dim=dim, keepdim=True).clamp_min(1e-12) / 127.0
@@ -156,12 +168,21 @@ def tiny_random_pair(
     hidden: int = 64,
     layers_m: int = 4,
     layers_mp: int = 2,
+    divergent_outputs: bool = True,
 ) -> Tuple[nn.Module, nn.Module]:
     """Build a seed-fixed randomly-initialized GPT-2 pair (M: deep, M': shallow) for tests.
 
     Network-free, runs in seconds, hermetic size-substitution pair. Hidden size
     and vocab are shared so the attacker can build a dimensionally-valid fake
     receipt from M''s activations (a strong setting -- and it is still detected).
+
+    `divergent_outputs` permutes M''s tied embedding table so the two models also emit
+    *different text*. Without it they do not: a randomly-initialized GPT-2 is dominated by
+    the residual copy of the last prompt token, so both models greedily echo that token and
+    M' is behaviorally identical to M. A substitution nobody could notice in the output is
+    not the substitution this project is about, and it silently made the pair useless for
+    anything that reads the emitted tokens -- Verifier.generation_check, and the forgery it
+    defends against, both need M' to actually say something different.
     """
     from transformers import GPT2Config, GPT2LMHeadModel
 
@@ -182,7 +203,19 @@ def tiny_random_pair(
         model.requires_grad_(False)
         return model
 
-    return build(layers_m, 1), build(layers_mp, 2)
+    model_m, model_mp = build(layers_m, 1), build(layers_mp, 2)
+    if divergent_outputs:
+        with torch.no_grad():
+            gen = torch.Generator().manual_seed(seed * 1000 + 7)
+            perm = torch.randperm(vocab_size, generator=gen)
+            # Untie the output head and permute it. Permuting the *tied* table instead
+            # changes nothing observable: the echo circuit reads and writes through the same
+            # matrix, so the permutation cancels and M' still emits the last prompt token.
+            head = nn.Linear(hidden, vocab_size, bias=False)
+            head.weight.data = model_mp.get_output_embeddings().weight.data[perm].clone()
+            model_mp.lm_head = head
+            model_mp.config.tie_word_embeddings = False
+    return model_m, model_mp
 
 
 # ---------------------------------------------------------------------------

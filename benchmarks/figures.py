@@ -35,6 +35,7 @@ SCENARIO_LABELS = {
     "quant": "Quantization substitution (FP32 -> INT8)",
     "random": "Randomized substitution (M w.p. p=0.9)",
     "evasive": "Audit evasion (canary -> M)",
+    "forge": "Receipt forgery (M' text under a real M receipt)",
 }
 
 
@@ -72,9 +73,11 @@ def fig_headline(results: Dict[str, dict], threshold: float, path: str) -> None:
     few requests thanks to full coverage, while the black box lags under randomization
     and stays flat forever under audit evasion."""
     apply_style()
-    names = ["size", "quant", "random", "evasive"]
+    names = ["size", "quant", "random", "evasive", "forge"]
     cap = threshold * 4
-    fig, axes = plt.subplots(2, 2, figsize=(11, 7.2), sharex=False)
+    fig, axes = plt.subplots(2, 3, figsize=(15.5, 7.2), sharex=False)
+    for spare in axes.flat[len(names):]:
+        spare.set_visible(False)
     for ax, name in zip(axes.flat, names):
         r = results[name]
         ax.axhline(threshold, color=C_MUTED, lw=1.2, ls="--", zorder=1)
@@ -93,7 +96,7 @@ def fig_headline(results: Dict[str, dict], threshold: float, path: str) -> None:
             ax.plot([tb], [threshold], "s", color=C_BB, ms=7, zorder=4)
             ax.annotate(f"BB detected t={tb}", (tb, threshold), textcoords="offset points",
                         xytext=(8, -16), fontsize=9, color=C_BB)
-        elif name in ("random", "evasive"):
+        elif name in ("random", "evasive", "forge"):
             ax.annotate("black box: not detected", (0.5, 0.12), xycoords="axes fraction",
                         fontsize=10, color=C_BB, fontweight="bold")
         ax.set_title(SCENARIO_LABELS[name], fontsize=11)
@@ -116,7 +119,8 @@ def fig_headline(results: Dict[str, dict], threshold: float, path: str) -> None:
 def fig_roc(rocs: Dict[str, dict], path: str) -> None:
     """Per-task ROC (per-request z statistic)."""
     apply_style()
-    colors = {"size": C_ASSAY, "quant": C_BB, "random": C_BB_DENSE, "evasive": "#008300"}
+    colors = {"size": C_ASSAY, "quant": C_BB, "random": C_BB_DENSE,
+              "evasive": "#008300", "forge": C_CRITICAL}
     fig, ax = plt.subplots(figsize=(5.6, 5.2))
     ax.plot([0, 1], [0, 1], color=C_GRID, lw=1.0, ls="--", zorder=1)
     for name, roc in rocs.items():
@@ -194,7 +198,12 @@ def fig_queries(qtd: Dict[str, dict], n_budget: int, path: str) -> None:
     ]
     fig, ax = plt.subplots(figsize=(9.0, 5.0))
     ypos = np.arange(len(names))[::-1] * (len(methods) + 1.2)
-    nd_x = n_budget * 2
+    # The "not detected" bar must reach past every real value, and the axis past that.
+    # Sizing it from n_budget alone silently clipped any method whose budget was larger
+    # than the traffic horizon (the dedicated black box runs 400 canary queries against
+    # an 80-request horizon, so its 278 ran off the right edge with its label invisible).
+    observed = [v for name in names for v in qtd[name].values() if v]
+    nd_x = max([n_budget] + observed) * 2
     # Bars start at x0 < 1 so that a value of exactly 1 (Assay's usual result) still
     # renders a visible bar on the log axis instead of collapsing to zero width.
     x0 = 0.62

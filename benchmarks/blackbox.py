@@ -35,15 +35,31 @@ def token_agreement(a: Sequence[int], b: Sequence[int]) -> float:
 class BernoulliEProcess:
     """Sequential e-process on the mismatch indicator (mixture likelihood-ratio bet).
 
-    H0: mismatch ~ Bernoulli(q0) (calibrated on honest operation). At each step it
-    averages the likelihood ratios of several alternatives q1 (mixing preserves E[e|H0]=1).
+    H0: mismatch ~ Bernoulli(q0), calibrated on honest operation. One likelihood-ratio
+    e-process is run per alternative q1, and the reported evidence is the *average of the
+    cumulative* e-values -- a mixture over paths, not over steps.
+
+    That distinction decides whether the baseline can see a rarely-cheating provider at
+    all, so it is worth being explicit. Averaging the per-step ratios and multiplying
+    those averages, E_t = prod_s mean_j LR_j(x_s), lets the aggressive alternatives tax
+    every non-mismatch step: at q0=0.038 with alts (0.1, 0.3, 0.8) a clean step costs
+    log 0.62 = -0.47, while the q1=0.1 component alone would only pay log 0.94 = -0.07.
+    Against a provider that cheats on 10% of queries the drift is then negative and the
+    baseline never fires, no matter how long it runs. Mixing the cumulative e-values,
+    E_t = mean_j prod_s LR_j(x_s), keeps E[E_t | H0] = 1 just the same but tracks the
+    best alternative up to a factor 1/|alts|, and detects that provider in ~80 dedicated
+    canary queries. The weaker form would have made the black box look structurally blind
+    to randomized substitution when it is really only slow -- see the README table, which
+    reports the numbers this class produces.
     """
 
-    def __init__(self, q0: float = 0.02, alpha: float = 0.01, alts: Tuple[float, ...] = (0.1, 0.3, 0.8)):
+    def __init__(self, q0: float = 0.02, alpha: float = 0.01, alts: Tuple[float, ...] = (0.05, 0.1, 0.3, 0.8)):
         self.q0 = min(max(q0, 1e-4), 0.5)
         self.alpha = alpha
         self.alts = alts
         self.log_e = 0.0
+        # One cumulative log likelihood ratio per alternative; mixed on read.
+        self._cum = [0.0] * len(alts)
         self.t = 0
         self.t_alarm: Optional[int] = None
         self.history: List[float] = []
@@ -58,13 +74,13 @@ class BernoulliEProcess:
 
     def update(self, mismatch: bool) -> None:
         x = 1.0 if mismatch else 0.0
-        lrs = [
-            (q1 / self.q0) ** x * ((1 - q1) / (1 - self.q0)) ** (1 - x)
-            for q1 in self.alts
-        ]
+        for j, q1 in enumerate(self.alts):
+            lr = (q1 / self.q0) ** x * ((1 - q1) / (1 - self.q0)) ** (1 - x)
+            self._cum[j] += math.log(max(lr, 1e-300))
         self.t += 1
-        self.log_e += math.log(max(float(np.mean(lrs)), 1e-300))
-        self.log_e = max(self.log_e, -50.0)
+        # log mean_j exp(cum_j), computed stably.
+        m = max(self._cum)
+        self.log_e = m + math.log(sum(math.exp(c - m) for c in self._cum) / len(self._cum))
         self.history.append(self.log_e)
         if self.t_alarm is None and self.log_e >= self.threshold:
             self.t_alarm = self.t

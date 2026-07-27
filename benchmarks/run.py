@@ -153,11 +153,20 @@ def roc_curve(neg: List[float], pos: List[float]) -> Dict[str, list]:
 
 
 def median_or_none(vals: List[Optional[int]]) -> Optional[float]:
-    """None if a majority were not detected; otherwise the median over the detected trials."""
-    detected = [v for v in vals if v is not None]
-    if len(detected) * 2 <= len(vals):
+    """Median detection time with undetected trials kept in the ordering as +infinity.
+
+    An undetected trial is a right-censored observation, not a missing one. Dropping it and
+    taking the median of the rest reports a smaller number than actually happened: with
+    [5, 10, 60, undetected] that shortcut returns 10 where the censored median is 35. The
+    bias lands on whichever column ran out of budget, so it can flatter either side.
+    Returns None when the median itself falls in the censored region.
+    """
+    ordered = sorted(math.inf if v is None else float(v) for v in vals)
+    n = len(ordered)
+    if n == 0:
         return None
-    return float(np.median(detected))
+    mid = ordered[n // 2] if n % 2 else 0.5 * (ordered[n // 2 - 1] + ordered[n // 2])
+    return None if math.isinf(mid) else float(mid)
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +179,9 @@ SCENARIO_DEFS = {
     "quant": dict(mode="cheat", mp="quant"),
     "random": dict(mode="random", mp="size"),
     "evasive": dict(mode="evasive", mp="size"),
+    # Decodes with M' but builds the receipt from one teacher-forced pass of M. The sketch
+    # check cannot see it at all; only the generation-consistency check can.
+    "forge": dict(mode="forge", mp="size"),
 }
 
 
@@ -191,7 +203,8 @@ def run_scenario(ctx: dict, name: str, trial: int, n_requests: int, collect_full
         canaries=ctx["canaries"], jitter=jitter, gen_len=ctx["gen_len"], seed=trial * 131 + 7,
     )
     verifier = Verifier(ctx["M"], ctx["sketcher"], ctx["signer"], ctx["calib"],
-                        verifier_seed=trial * 991 + 13)
+                        verifier_seed=trial * 991 + 13,
+                        deep_check_rate=ctx["deep_check_rate"])
     audit = EValueAudit(alpha=ctx["alpha"])
     sprt = SPRTAudit(alpha=ctx["alpha"])
     bb = CanaryAuditor(ctx["canaries"], ctx["refs"], q0=ctx["q0"], alpha=ctx["alpha"], seed=trial * 17 + 3)
@@ -201,7 +214,7 @@ def run_scenario(ctx: dict, name: str, trial: int, n_requests: int, collect_full
     rec = dict(
         name=name, trial=trial, n_requests=n_requests, audit_rate=ctx["audit_rate"],
         assay_history=[], bb_history_x=[], bb_history_y=[],
-        zs=[], labels=[], sign=[], rank=[], cost_ratios=[], verify_walls=[], full_walls=[],
+        zs=[], scores=[], labels=[], sign=[], rank=[], cost_ratios=[], verify_walls=[], full_walls=[],
         user_tokens=[],
     )
     bb_t_alarm_traffic = None
@@ -219,6 +232,12 @@ def run_scenario(ctx: dict, name: str, trial: int, n_requests: int, collect_full
         sprt.update(verdict.z)
         rec["assay_history"].append(audit.log_e)
         rec["zs"].append(min(verdict.z, 100.0))
+        # -log10(p) is the statistic the audit actually acts on, and unlike z it also
+        # carries the generation check. Scoring the ROC on z alone gave the forgery
+        # scenario AUC 0.000 -- not a bug, but a measure of a statistic with no power
+        # there: a forged receipt is *cleaner* than an honest one, because the forger
+        # recomputes without the jitter an honest server has.
+        rec["scores"].append(min(-math.log10(max(verdict.p, 1e-300)), 300.0))
         rec["labels"].append(1 if resp.model_used == "M'" else 0)
         rec["sign"].append(verdict.sign_agreement)
         rec["rank"].append(verdict.rank_overlap)
@@ -319,6 +338,7 @@ def setup(args) -> dict:
         canaries=canaries, refs=refs, sketcher=sketcher, signer=signer,
         calib=calib, q0=q0, sigma=args.sigma, gen_len=args.gen_len,
         alpha=args.alpha, audit_rate=args.audit_rate, p_honest=args.p_honest,
+        deep_check_rate=args.deep_check_rate,
     )
 
 
@@ -333,7 +353,8 @@ def main() -> None:
     ap.add_argument("--model-mp", default="distilgpt2")
     ap.add_argument("--n", type=int, default=80, help="requests per scenario")
     ap.add_argument("--trials", type=int, default=3)
-    ap.add_argument("--n-bb", type=int, default=150, help="max queries for BB dedicated mode")
+    ap.add_argument("--n-bb", type=int, default=400,
+                    help="max queries for BB dedicated mode. Sized so the baseline can actually\n                         finish on the hardest scenario it is capable of (randomized substitution\n                         needs ~160 canary queries); a smaller budget would report a\n                         budget limit as if it were a structural blind spot.")
     ap.add_argument("--n-cal", type=int, default=48)
     ap.add_argument("--gen-len", type=int, default=12)
     ap.add_argument("--prompt-len", type=int, default=12)
@@ -341,13 +362,16 @@ def main() -> None:
     ap.add_argument("--sigma", type=float, default=3e-4)
     ap.add_argument("--audit-rate", type=float, default=0.1)
     ap.add_argument("--p-honest", type=float, default=0.9)
+    ap.add_argument("--deep-check-rate", type=float, default=0.25,
+                    help="share of requests that also get the generation-consistency check "
+                         "(the only check that catches a forged receipt; costs a full-depth pass)")
     ap.add_argument("--outdir", default=None,
                     help="figure output dir (default: figures/ for the canonical run, "
                          "figures/<tag>/ otherwise)")
     ap.add_argument("--quick", action="store_true", help="reduced settings (n=40, trials=2, n_cal=24)")
     args = ap.parse_args()
     if args.quick:
-        args.n, args.trials, args.n_cal, args.n_bb = 40, 2, 24, 60
+        args.n, args.trials, args.n_cal, args.n_bb = 40, 2, 24, 200
 
     # Only the canonical configuration (full gpt2 pair) owns the artifacts the README
     # cites; smaller smoke runs write beside them instead of overwriting them.
@@ -363,12 +387,14 @@ def main() -> None:
     os.makedirs(args.outdir, exist_ok=True)
     ctx = setup(args)
 
-    scenario_names = ["honest", "size", "quant", "random", "evasive"]
+    scenario_names = ["honest", "size", "quant", "random", "evasive", "forge"]
     all_trials: Dict[str, List[dict]] = {s: [] for s in scenario_names}
     dense: Dict[str, dict] = {}
 
     for name in scenario_names:
-        n_trials = 1 if name == "honest" else args.trials
+        # The honest control produces the false-positive numbers, so it needs as many
+        # trials as anything else -- a single run cannot distinguish alpha=0.01 from 0.5.
+        n_trials = args.trials
         for trial in range(n_trials):
             t0 = time.time()
             rec = run_scenario(ctx, name, trial, args.n, collect_full_cost=(name == "honest"))
@@ -381,9 +407,12 @@ def main() -> None:
             print(f"[run] {name} bb_dense: t={dense[name]['t_alarm']}")
 
     # ---- Aggregate --------------------------------------------------------
-    honest = all_trials["honest"][0]
-    neg_z = honest["zs"]
-    fpr_seq = 1.0 if honest["assay_t_alarm"] else 0.0
+    honest_trials = all_trials["honest"]
+    honest = honest_trials[0]
+    neg_z = [z for t in honest_trials for z in t["zs"]]
+    neg_score = [s_ for t in honest_trials for s_ in t["scores"]]
+    fpr_seq = float(np.mean([t["assay_t_alarm"] is not None for t in honest_trials]))
+    bb_fpr_seq = float(np.mean([t["bb_t_alarm_traffic"] is not None for t in honest_trials]))
     fpr_req = float(np.mean(np.asarray(neg_z) > 3.09))
 
     results: Dict[str, dict] = {}
@@ -400,8 +429,8 @@ def main() -> None:
         trials = all_trials[name]
         first = trials[0]
         pos_mask = np.asarray(first["labels"]) == 1
-        pos_z = list(np.asarray(first["zs"])[pos_mask])
-        rocs[name] = roc_curve(neg_z, pos_z)
+        pos_score = list(np.asarray(first["scores"])[pos_mask])
+        rocs[name] = roc_curve(neg_score, pos_score)
         qtd[name] = {
             "assay": median_or_none([t["assay_t_alarm"] for t in trials]),
             "bb": median_or_none([t["bb_t_alarm_traffic"] for t in trials]),
@@ -444,12 +473,21 @@ def main() -> None:
     summary = {
         "config": {k: getattr(args, k) for k in ("pair", "n", "trials", "gen_len", "alpha",
                                                   "sigma", "audit_rate", "p_honest", "n_cal")},
-        "honest": {"fpr_per_request_z3": fpr_req, "sequential_false_alarm": fpr_seq,
+        "honest": {"fpr_per_request_z3": fpr_req,
+                   "sequential_false_alarm": fpr_seq,
+                   "bb_sequential_false_alarm": bb_fpr_seq,
+                   "n_honest_trials": len(honest_trials),
+                   "n_honest_requests": len(neg_z),
                    "assay_final_log_e": honest["assay_history"][-1]},
         "queries_to_detection": qtd,
         "auc": {k: v["auc"] for k, v in rocs.items()},
         "distribution_bb_queries": dist_detect,
         "coverage": {"assay": 1.0, "bb_interleaved": args.audit_rate},
+        # Both null rates that decide how strong each side is. q0 alone sets the black
+        # box's power, and neither was recoverable from the artifacts before.
+        "null_rates": {"bb_mismatch_q0": ctx["q0"],
+                       "assay_gen_mismatch": ctx["calib"].gen_mismatch_rate,
+                       "deep_check_rate": args.deep_check_rate},
         "verifier_cost": cost,
         "invariants_honest": {"sign": float(np.mean(honest["sign"])), "rank": float(np.mean(honest["rank"]))},
     }
@@ -469,7 +507,8 @@ def main() -> None:
         "|---|---|---|---|---|---|",
     ]
     label = {"size": "Full substitution", "quant": "Quantization",
-             "random": "Randomized p=0.9", "evasive": "Audit evasion"}
+             "random": "Randomized p=0.9", "evasive": "Audit evasion",
+             "forge": "Receipt forgery (M' text, M receipt)"}
     fmt = lambda v: ("**not detected**" if v is None else f"{v:g}")
     for name in scenario_names[1:]:
         q = qtd[name]
@@ -479,7 +518,8 @@ def main() -> None:
         )
     lines += [
         "",
-        f"- Honest operation: sequential false alarm = {'yes' if fpr_seq else 'no'}, "
+        f"- Honest control ({len(honest_trials)} trials, {len(neg_z)} requests): "
+        f"Assay sequential false alarms {fpr_seq:.0%}, black box {bb_fpr_seq:.0%}, "
         f"per-request FPR(z>3.09) = {fpr_req:.3f}",
         f"- Verifier cost ratio: layer-token {cost['layer_token_ratio']:.2f} / "
         f"wall {cost['wall_ratio']:.2f} (full recompute = 1.0)",

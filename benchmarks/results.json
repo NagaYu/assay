@@ -13,7 +13,10 @@
   "honest": {
     "fpr_per_request_z3": 0.0,
     "sequential_false_alarm": 0.0,
-    "assay_final_log_e": -5.014551493891885
+    "bb_sequential_false_alarm": 0.0,
+    "n_honest_trials": 3,
+    "n_honest_requests": 240,
+    "assay_final_log_e": -7.434792746041186
   },
   "queries_to_detection": {
     "size": {
@@ -23,44 +26,56 @@
     },
     "quant": {
       "assay": 1.0,
-      "bb": 19.0,
-      "bb_dense": 2
+      "bb": null,
+      "bb_dense": 181
     },
     "random": {
       "assay": 11.0,
       "bb": null,
-      "bb_dense": null
+      "bb_dense": 278
     },
     "evasive": {
       "assay": 1.0,
       "bb": null,
       "bb_dense": null
+    },
+    "forge": {
+      "assay": 3.0,
+      "bb": 31.0,
+      "bb_dense": 2
     }
   },
   "auc": {
     "size": 1.0,
     "quant": 1.0,
     "random": 1.0,
-    "evasive": 1.0
+    "evasive": 1.0,
+    "forge": 0.21395833333333333
   },
   "distribution_bb_queries": {
     "size": 5,
-    "quant": 10,
+    "quant": null,
     "random": null,
-    "evasive": 5
+    "evasive": 5,
+    "forge": 5
   },
   "coverage": {
     "assay": 1.0,
     "bb_interleaved": 0.1
   },
+  "null_rates": {
+    "bb_mismatch_q0": 0.038461538461538464,
+    "assay_gen_mismatch": 0.01,
+    "deep_check_rate": 0.25
+  },
   "verifier_cost": {
-    "layer_token_ratio": 0.633896081650837,
-    "wall_ratio": 0.7161306945316419,
-    "mean_verify_wall_s": 0.02600018017307891,
-    "mean_full_wall_s": 0.03630647362501804
+    "layer_token_ratio": 0.7350594257652024,
+    "wall_ratio": 0.9331845446210265,
+    "mean_verify_wall_s": 0.03233586525833453,
+    "mean_full_wall_s": 0.03465109387497023
   },
   "invariants_honest": {
-    "sign": 0.9982421875,
-    "rank": 0.9958333333333332
+    "sign": 0.9993489583333333,
+    "rank": 0.9976851851851851
   }
 }

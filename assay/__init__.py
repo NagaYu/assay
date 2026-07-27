@@ -3,16 +3,20 @@
 Central claims:
   1. [unevadable]            Every request is in scope, so canary-based evasion and
                              probabilistic substitution still leave the cheating
-                             request itself as evidence. Note the provider owns the
-                             signing key (the TEE is simulated), so this is *not* a
-                             claim of cryptographic unforgeability: it is that a receipt
-                             agreeing with M's activations cannot be produced without
-                             running M, and that no request escapes the check.
+                             request itself as evidence. Two things this does *not* say.
+                             The provider owns the signing key (the TEE is simulated), so
+                             it is not a claim of cryptographic unforgeability. And a
+                             matching sketch only shows M was *run over* the text, not
+                             that M *produced* it -- closing that gap needs the
+                             generation-consistency check (see verifier.py and
+                             ProviderServer(mode="forge"), which breaks the sketch check
+                             outright and is caught only by that check).
   2. [nondeterminism-robust] Uses invariant features and a calibrated tolerance band
                              that do not move under benign numerical jitter.
   3. [low-cost]              Verification runs a slice of a full recompute (up to the
-                             drawn layer, over the inspected positions, never the
-                             lm_head): a constant-factor saving, ~0.63x measured.
+                             drawn layer, over the inspected positions): a constant-factor
+                             saving, ~0.74x measured, including the full-depth passes the
+                             generation check needs on a minority of requests.
 """
 
 from assay.hooks import (

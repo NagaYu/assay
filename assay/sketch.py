@@ -69,6 +69,18 @@ class SketchConfig:
 # Receipt
 # ---------------------------------------------------------------------------
 
+def opaque_request_id(purpose: str, seed: int, index: int) -> str:
+    """Build a request id that carries no visible hint about why the request was made.
+
+    [Claim: unevadable] Any traffic the auditor originates -- calibration runs, spot checks
+    -- travels through the provider under audit. If those requests are recognizable (they
+    used to be literally "cal-0", "cal-1", ...), a provider can answer them honestly and
+    cheat on everything else, which is the canary-evasion attack wearing a different hat.
+    The digest is opaque to the provider while staying reproducible for the auditor.
+    """
+    return hashlib.sha256(f"{purpose}|{seed}|{index}".encode()).hexdigest()[:24]
+
+
 def token_sha(ids: Sequence[int]) -> str:
     """Hash a token sequence for receipt binding.
 
@@ -213,9 +225,23 @@ class ActivationSketcher:
         [Claim: unevadable] Positions are request-specific and re-derivable -- a
         provider that re-picks positions to sketch only "convenient" places is
         rejected at verification.
+
+        The candidate window runs from the last prompt token (the state that produced the
+        first response token) through the last response token *inclusive*. Including the
+        final position matters: with it excluded, a one-token response left exactly one
+        candidate -- the prompt's last token -- whose hidden state is a function of the
+        prompt alone, so the receipt said nothing at all about the response. One-token
+        replies are ordinary in practice (classification, routing, an immediate EOS), and
+        that gap let a provider serve them from anywhere while still passing. Every
+        candidate from prompt_len onward depends on the response tokens.
         """
-        lo, hi = prompt_len - 1, total_len - 1  # positions that generated the response tokens
-        candidates = list(range(max(lo, 0), max(hi, lo + 1)))
+        lo = max(prompt_len - 1, 0)
+        hi = total_len  # exclusive; total_len-1 is the last response token's own state
+        if total_len <= 0 or hi <= lo:
+            raise ValueError(
+                f"no inspectable positions for prompt_len={prompt_len}, total_len={total_len}"
+            )
+        candidates = list(range(lo, hi))
         rng = np.random.default_rng(prf_int(self.config.seed, "pos", request_id, prompt_len, total_len))
         n = min(self.config.n_positions, len(candidates))
         picked = rng.choice(len(candidates), size=n, replace=False)

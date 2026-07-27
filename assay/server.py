@@ -3,6 +3,9 @@
 When generating a response it switches between honest(M) and cheat(M'), and adds:
   (a) randomized substitution: M with probability p_honest, else M'
   (b) audit evasion: if a known canary query is detected, respond with M
+  (c) receipt forgery: decode with M', then build the receipt from a single teacher-forced
+      pass of M over M''s own output. Unlike (a) and (b), this one is not aimed at sampling
+      audits -- it is aimed at Assay, and it beats the sketch check outright
 Every mode issues and signs a protocol-conformant receipt (the signing key is
 provider-controlled -- detection is done by sketch consistency; see hooks/sketch).
 
@@ -16,7 +19,9 @@ it could just serve M) -- this is the crux of Assay's security.
 
 [Claim: unevadable] The evasive mode completely defeats canary-based external audits,
 but Assay puts a receipt on ordinary user requests too, so evasion is structurally
-impossible.
+impossible. The forge mode is the honest counterweight to that claim: per-request receipts
+do not by themselves prove *who generated* the text, and only the generation-consistency
+check in verifier.py closes that gap.
 """
 
 from __future__ import annotations
@@ -44,7 +49,7 @@ class ServerResponse:
 class ProviderServer:
     """An attacker-modeled server switchable between honest / cheat / random / evasive."""
 
-    MODES = ("honest", "cheat", "random", "evasive")
+    MODES = ("honest", "cheat", "random", "evasive", "forge")
 
     def __init__(
         self,
@@ -85,10 +90,17 @@ class ProviderServer:
         random:  M with probability p_honest (dilutes a sampling audit's expected
                  detection time by a factor of 1/(1-p_honest)).
 
-        [Claim: unevadable] Both modes are aimed squarely at sampling audits, and both work
-        against one: evasion makes canary queries useless, randomization makes them slow.
-        Neither helps against per-request receipts, because the decision this method makes
-        is recorded in the receipt of the very request it was made for.
+        forge:   decode with M', then build the receipt from one teacher-forced pass of M
+                 over M''s output (see handle). The strongest attack in this repo: the
+                 receipt is real, the sketches agree exactly, and the user still gets M'
+                 text. Only Verifier.generation_check catches it.
+
+        [Claim: unevadable] The first three modes are aimed squarely at sampling audits, and
+        all work against one: evasion makes canary queries useless, randomization makes them
+        slow. None helps against per-request receipts, because the decision this method makes
+        is recorded in the receipt of the very request it was made for. "forge" is different
+        in kind -- it does not try to dodge the audit, it satisfies it -- which is why the
+        sketch check alone is not sufficient.
         """
         if self.mode == "honest":
             return self.model_m, "M"
@@ -97,6 +109,10 @@ class ProviderServer:
         if self.mode == "random":
             if self._rng.random() < self.p_honest:
                 return self.model_m, "M"
+            return self.model_mp, "M'"
+        if self.mode == "forge":
+            # Decode with M'; the receipt is built from M in handle(). The label is M'
+            # because M' is what the *user* got.
             return self.model_mp, "M'"
         # evasive
         key = tuple(int(x) for x in prompt_ids.flatten().tolist())
@@ -152,13 +168,17 @@ class ProviderServer:
         with ctx:
             output_ids = self._generate(model, prompt_ids)
             full_ids = torch.cat([prompt_ids.flatten(), torch.as_tensor(output_ids, dtype=torch.long)])
-            hidden_states = capture_hidden_states(model, full_ids)
+            # The "forge" attacker decodes with M' and then pays for exactly one
+            # teacher-forced pass of M over its own output, so the receipt is genuinely M's
+            # while the user's text is M''s. See _decide and Verifier.generation_check.
+            receipt_model = self.model_m if self.mode == "forge" else model
+            hidden_states = capture_hidden_states(receipt_model, full_ids)
         receipt = self.sketcher.build_receipt(
             request_id=request_id,
             model_claim=self.model_claim,
             prompt_ids=[int(x) for x in prompt_ids.flatten().tolist()],
             output_ids=output_ids,
             hidden_states=hidden_states,
-            layer_map=self._layer_map(model),
+            layer_map=self._layer_map(receipt_model),
         )
         return ServerResponse(request_id=request_id, output_ids=output_ids, receipt=receipt, model_used=used)
