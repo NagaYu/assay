@@ -40,7 +40,7 @@ from assay.hooks import load_int8_model, load_model, load_tokenizer, num_layers,
 from assay.nondeterminism import NondeterminismModel
 from assay.sequential_audit import EValueAudit, SPRTAudit
 from assay.server import ProviderServer
-from assay.sketch import ActivationSketcher, HmacSigner, SketchConfig
+from assay.sketch import ActivationSketcher, HmacSigner, SketchConfig, opaque_request_id
 from assay.verifier import Calibrator, Verifier
 from benchmarks.blackbox import CanaryAuditor, DistributionAuditor, reference_outputs
 from benchmarks import figures
@@ -325,7 +325,9 @@ def setup(args) -> dict:
     n_q0 = 2 * len(canaries)
     for i in range(n_q0):
         c = i % len(canaries)
-        resp = srv_cal.handle(f"q0-{i}", canaries[c])
+        # Opaque ids here too: the q0 estimate travels through the provider under audit,
+        # and "q0-0", "q0-1", ... would be as recognizable as the old "cal-" prefix.
+        resp = srv_cal.handle(opaque_request_id("bb-q0", 0, i), canaries[c])
         if token_agreement(refs[c], resp.output_ids) < 0.9:
             mism += 1
     q0 = max((mism + 1) / (n_q0 + 2), 0.005)

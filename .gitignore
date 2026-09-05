@@ -20,3 +20,6 @@ dist/
 figures/*/
 benchmarks/results.*.json
 benchmarks/results.*.md
+
+# Local HF export staging (regenerate with benchmarks/export_hf.py)
+hf_export/

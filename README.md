@@ -3,6 +3,8 @@
 [![tests](https://github.com/NagaYu/assay/actions/workflows/ci.yml/badge.svg)](https://github.com/NagaYu/assay/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![demo](https://img.shields.io/badge/%F0%9F%A4%97-demo-yellow.svg)](https://huggingface.co/spaces/NagaYu/assay-demo)
+[![dataset](https://img.shields.io/badge/%F0%9F%A4%97-receipt%20corpus-yellow.svg)](https://huggingface.co/datasets/NagaYu/assay-receipts)
 
 > **Catch subtle and evasive model swaps in fewer queries than an external
 > black-box audit.** Every response ships a signed, low-dimensional sketch of its
@@ -246,6 +248,26 @@ still short: most requests are uninformative, and the informative ones are decis
 | ![queries](figures/fig_queries.png) | ![roc](figures/fig_roc.png) |
 | ![cost](figures/fig_cost.png) | ![invariance](figures/fig_invariance.png) |
 
+## Try it without installing anything
+
+| | |
+|---|---|
+| 🤗 [**Interactive demo**](https://huggingface.co/spaces/NagaYu/assay-demo) | Pick a cheating provider, toggle the generation-consistency check, watch the evidence accumulate. Replays real gpt2 receipts, so it loads instantly. |
+| 🤗 [**Receipt corpus**](https://huggingface.co/datasets/NagaYu/assay-receipts) | 720 signed receipts across all six provider behaviours, with verdicts and ground truth. Every row is re-verifiable against the gpt2 weights. |
+| 🤗 [**Model bundle**](https://huggingface.co/NagaYu/assay-tiny-pair) | The seeded M / M' fixture and the calibrated tolerance band, so the experiments reproduce offline in seconds. |
+
+The fastest way to see the point of the whole project: open the demo, select **receipt
+forgery**, and switch the deep check off. The audit goes blind on receipts that are
+genuinely M's.
+
+```bash
+# Reproduce the corpus and re-verify it yourself
+python benchmarks/export_hf.py --pair gpt2 --n 60 --trials 2 --outdir hf_export
+python benchmarks/verify_receipts.py \
+  --receipts hf_export/dataset/receipts.jsonl \
+  --protocol hf_export/dataset/protocol.json --model gpt2 --limit 100
+```
+
 ## Install
 
 ```bash
@@ -290,9 +312,13 @@ assay/
   sequential_audit.py  # e-value / SPRT sequential audit
   server.py            # attacker-modeled provider (honest/cheat/random/evasive)
 benchmarks/
-  run.py               # benchmark driver (4 scenarios × Assay vs BB; makes figures + table)
+  run.py               # benchmark driver (6 scenarios × Assay vs BB; makes figures + table)
   blackbox.py          # black-box audit baselines (canary matching, distribution test)
   figures.py           # figure generation
+  export_hf.py         # build the published receipt corpus + model bundle
+  verify_receipts.py   # re-verify a published corpus against the real weights
+  fpr_check.py         # measure the sequential false-alarm rate with independent calibrations
+space/                 # sources for the Hugging Face demo (static + a Gradio variant)
 tests/
   test_forgery.py      # the M'-text-under-a-real-M-receipt attack, and the check that stops it
   ...                  # pytest for the claims above (hermetic, seconds on CPU)

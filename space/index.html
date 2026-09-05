@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assay — catching model substitution per request</title>
+<style>
+  :root {
+    --ink: #14130f; --ink2: #45443f; --muted: #86847c; --line: #e3e1d8;
+    --surface: #fcfcfb; --panel: #f5f4ef; --assay: #2a78d6; --hit: #c8442e; --ok: #1a7f5a;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--surface); color: var(--ink);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 26px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 17px; margin: 32px 0 10px; letter-spacing: -0.01em; }
+  p { margin: 0 0 12px; color: var(--ink2); }
+  .lede { font-size: 16px; color: var(--ink2); max-width: 68ch; }
+  .links { font-size: 14px; margin: 12px 0 24px; }
+  .links a { color: var(--assay); text-decoration: none; border-bottom: 1px solid #cfe0f5; }
+  .links a:hover { border-bottom-color: var(--assay); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-end; }
+  .ctl { display: flex; flex-direction: column; gap: 6px; }
+  .ctl label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  select, button {
+    font: inherit; padding: 7px 10px; border: 1px solid var(--line);
+    border-radius: 7px; background: #fff; color: var(--ink);
+  }
+  .toggle { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink2); }
+  .toggle input { width: 16px; height: 16px; accent-color: var(--assay); }
+  .verdict { margin: 18px 0 6px; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .verdict.hit { color: var(--hit); } .verdict.clear { color: var(--ok); } .verdict.miss { color: var(--muted); }
+  .facts { display: flex; flex-wrap: wrap; gap: 10px 26px; font-size: 14px; color: var(--ink2); margin-bottom: 4px; }
+  .facts b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .note { font-size: 14px; color: var(--ink2); background: #fff; border-left: 3px solid var(--assay);
+          padding: 10px 14px; border-radius: 0 7px 7px 0; margin-top: 14px; }
+  .note.warn { border-left-color: var(--hit); }
+  svg { display: block; width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  td.mono { font-family: var(--mono); }
+  tr.cheap td:nth-child(2) { color: var(--hit); font-weight: 600; }
+  tr.deep { background: #fffdf3; }
+  .scroll { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+  .foot { margin-top: 36px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; }
+  code { font-family: var(--mono); font-size: 0.92em; background: #fff; padding: 1px 5px;
+         border: 1px solid var(--line); border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Assay — catching model substitution, one receipt at a time</h1>
+  <p class="lede">
+    An inference provider promises model <b>M</b> (gpt2) and quietly serves a cheaper
+    <b>M'</b> (distilgpt2, or an INT8 copy). Every response carries a signed sketch of its own
+    <code>hidden_states</code> — an <i>internal receipt</i> — and a verifier recomputes a small,
+    secretly-chosen slice of it. Coverage is 100% by construction: there is no request the audit
+    happened to miss.
+  </p>
+  <p class="links">
+    <a href="https://github.com/NagaYu/assay">Code</a> ·
+    <a href="https://huggingface.co/datasets/NagaYu/assay-receipts">Receipt corpus</a> ·
+    <a href="https://huggingface.co/NagaYu/assay-tiny-pair">Model bundle</a>
+  </p>
+
+  <div class="panel">
+    <div class="controls">
+      <div class="ctl">
+        <label for="scenario">Provider behaviour</label>
+        <select id="scenario"></select>
+      </div>
+      <div class="ctl">
+        <label for="trial">Run</label>
+        <select id="trial"><option value="0">1</option><option value="1">2</option></select>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="deep" checked>
+        Generation-consistency check (25% of requests)
+      </label>
+    </div>
+    <div id="explain" class="note"></div>
+  </div>
+
+  <div class="verdict" id="verdict"></div>
+  <div class="facts" id="facts"></div>
+  <div id="chart"></div>
+  <div id="insight"></div>
+
+  <h2>Per-request verdicts</h2>
+  <p style="font-size:14px">
+    “Served by” is ground truth — a real auditor never sees it. Shaded rows are the ones that
+    drew the generation-consistency check.
+  </p>
+  <div class="scroll"><table id="rows"></table></div>
+
+  <div class="foot">
+    Replayed from <a href="https://huggingface.co/datasets/NagaYu/assay-receipts">720 published
+    receipts</a> (gpt2 vs distilgpt2, CPU). Turning the deep check off replays the same receipts
+    scoring only the sketch statistic, which is exactly recoverable from each row's <code>z</code>.
+    Research prototype: the TEE is simulated with an HMAC signature, and the sequential audit's
+    α is stated for exact null p-values while the calibration here is estimated (measured
+    false-alarm rate: 1 in 40 honest runs against a nominal 1%).
+  </div>
+</div>
+
+<script>
+const LABEL = {
+  honest:  "honest — always M",
+  size:    "cheat — always M' (distilgpt2)",
+  quant:   "quantized — INT8 copy of M",
+  random:  "randomized — M' on 10% of requests",
+  evasive: "audit-evasive — canaries answered honestly",
+  forge:   "receipt forgery — M' text under a real M receipt",
+};
+const EXPLAIN = {
+  honest:  "Serves the real model on every request. Nothing should fire — this is the false-positive control.",
+  size:    "Serves the cheap model on every request. The crudest substitution, and the easiest to catch.",
+  quant:   "Serves an INT8 copy of M. The text barely changes, so an audit reading only output text struggles: a dedicated black-box auditor needs 181 canary queries. The activations move immediately.",
+  random:  "Serves M' on 10% of requests. This is what dilutes a sampling audit — its canary queries mostly land on honest answers, and it needs 278 of them.",
+  evasive: "Recognizes the auditor's canary prompts and answers <i>those</i> with M, cheating on everyone else. A black-box audit can never see this, at any query budget. Assay has no canary to recognize.",
+  forge:   "Decodes with M', then runs M once over M's own output to build a <b>genuine</b> receipt. Every signature verifies and every sketch matches. Switch the deep check off and watch the audit go blind.",
+};
+
+let DATA = null;
+const $ = id => document.getElementById(id);
+
+fetch("runs.json").then(r => r.json()).then(d => {
+  DATA = d;
+  const sel = $("scenario");
+  for (const k of ["forge", "honest", "size", "quant", "random", "evasive"]) {
+    const o = document.createElement("option");
+    o.value = k; o.textContent = LABEL[k]; sel.appendChild(o);
+  }
+  sel.value = "forge";
+  for (const el of [sel, $("trial"), $("deep")]) el.addEventListener("change", render);
+  render();
+});
+
+function render() {
+  const scenario = $("scenario").value, trial = $("trial").value, deep = $("deep").checked;
+  const run = DATA.runs[`${scenario}/${trial}`];
+  const variant = deep ? run.deep_on : run.deep_off;
+  $("explain").innerHTML = EXPLAIN[scenario];
+  $("explain").className = scenario === "forge" && !deep ? "note warn" : "note";
+
+  const n = variant.curve.length;
+  const cheap = run.steps.filter(s => s.by !== "M").length;
+  const deepRuns = deep ? run.steps.filter(s => s.deep).length : 0;
+  const cost = run.steps.reduce((a, s) => a + (deep || !s.deep ? s.cost : 0), 0) / n;
+
+  const v = $("verdict");
+  if (variant.alarm) {
+    v.textContent = `Substitution detected at request ${variant.alarm} of ${n}`; v.className = "verdict hit";
+  } else if (scenario === "honest") {
+    v.textContent = `No alarm across ${n} honest requests — as it should be`; v.className = "verdict clear";
+  } else {
+    v.textContent = `Not detected in ${n} requests`; v.className = "verdict miss";
+  }
+  $("facts").innerHTML =
+    `<span>Cheap model actually served on <b>${cheap}/${n}</b> requests</span>` +
+    `<span>Deep check ran on <b>${deepRuns}/${n}</b>${deep ? "" : " — <b>switched off</b>"}</span>` +
+    `<span>Verifier cost <b>${cost.toFixed(2)}×</b> a full recompute</span>`;
+
+  $("insight").innerHTML = insightFor(scenario, deep, variant, run);
+  drawChart(variant.curve, variant.alarm, DATA.threshold);
+  drawRows(run.steps, deep);
+}
+
+function insightFor(scenario, deep, variant, run) {
+  if (scenario !== "forge") return "";
+  const zs = run.steps.map(s => s.z).sort((a, b) => a - b);
+  const med = zs[Math.floor(zs.length / 2)];
+  if (!deep) {
+    return `<div class="note warn"><b>Every receipt here is authentic.</b> The provider ran M —
+      just not to generate anything. The median <code>z</code> on this run is
+      <b>${med.toFixed(1)}</b>: the receipts are not merely acceptable, they sit far on the
+      <i>clean</i> side of honest traffic, because the forger recomputes without the numerical
+      jitter a real serving stack has. A matching sketch proves M was <i>run over</i> the text,
+      not that M <i>produced</i> it.</div>`;
+  }
+  return `<div class="note"><b>The two tests fail in opposite directions on the same requests.</b>
+    The sketch statistic still reads <code>z</code> ≈ ${med.toFixed(1)} — cleaner than honest — while the
+    token-level check finds M disagreeing with the returned text at roughly three positions in four.
+    A teacher-forced pass reveals what M <i>would</i> have said, and it did not say this.</div>`;
+}
+
+function drawChart(curve, alarm, threshold) {
+  const W = 900, H = 320, L = 58, R = 18, T = 18, B = 40;
+  const n = curve.length, cap = threshold * 4;
+  const ys = curve.map(y => Math.min(y, cap));
+  const lo = Math.min(-2, Math.min(...ys) - 1), hi = cap * 1.05;
+  const x = i => L + (i / Math.max(n - 1, 1)) * (W - L - R);
+  const y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+
+  let ticks = "";
+  for (let k = 0; k <= 4; k++) {
+    const val = lo + (k / 4) * (hi - lo), yy = y(val);
+    ticks += `<line x1="${L}" y1="${yy}" x2="${W - R}" y2="${yy}" stroke="#e3e1d8"/>
+              <text x="${L - 8}" y="${yy + 4}" text-anchor="end" font-size="11" fill="#86847c">${val.toFixed(0)}</text>`;
+  }
+  const step = n > 60 ? 20 : 10;
+  for (let i = 0; i < n; i += step) {
+    ticks += `<text x="${x(i)}" y="${H - B + 20}" text-anchor="middle" font-size="11" fill="#86847c">${i + 1}</text>`;
+  }
+  const path = ys.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  let mark = "";
+  if (alarm) {
+    const ax = x(alarm - 1), ay = y(Math.min(threshold, cap));
+    mark = `<circle cx="${ax}" cy="${ay}" r="6" fill="#c8442e"/>
+            <text x="${ax + 11}" y="${ay - 8}" font-size="12" font-weight="600" fill="#c8442e">detected at ${alarm}</text>`;
+  }
+  $("chart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="Cumulative log e-value across requests">
+    ${ticks}
+    <line x1="${L}" y1="${y(threshold)}" x2="${W - R}" y2="${y(threshold)}"
+          stroke="#86847c" stroke-dasharray="5 4"/>
+    <text x="${W - R}" y="${y(threshold) - 7}" text-anchor="end" font-size="11" fill="#86847c">alarm threshold log(1/α)</text>
+    <path d="${path}" fill="none" stroke="#2a78d6" stroke-width="2.4" stroke-linejoin="round"/>
+    ${mark}
+    <text x="${(L + W - R) / 2}" y="${H - 4}" text-anchor="middle" font-size="12" fill="#45443f">requests</text>
+    <text x="14" y="${(T + H - B) / 2}" font-size="12" fill="#45443f"
+          transform="rotate(-90 14 ${(T + H - B) / 2})" text-anchor="middle">cumulative log e-value</text>
+  </svg>`;
+}
+
+function drawRows(steps, deep) {
+  const head = `<thead><tr><th>#</th><th>served by</th><th>z</th><th>p</th>
+    <th>deep check</th><th>token mismatch</th></tr></thead>`;
+  const body = steps.map(s => {
+    const isDeep = deep && s.deep;
+    const p = deep ? s.p : sketchP(s.z);
+    return `<tr class="${s.by !== "M" ? "cheap " : ""}${isDeep ? "deep" : ""}">
+      <td>${s.t}</td><td>${s.by}</td>
+      <td class="mono">${s.z >= 0 ? "+" : ""}${s.z.toFixed(2)}</td>
+      <td class="mono">${p.toExponential(1)}</td>
+      <td>${isDeep ? "yes" : "—"}</td>
+      <td>${isDeep ? `${s.gm}/${s.gc}` : "—"}</td></tr>`;
+  }).join("");
+  $("rows").innerHTML = head + "<tbody>" + body + "</tbody>";
+}
+
+// The verifier's one-sided sketch p-value, recomputed so the "deep check off" view is exact.
+function sketchP(z) {
+  return Math.max(0.5 * erfc(z / Math.SQRT2), 1e-12);
+}
+function erfc(x) {
+  // Numerical Recipes 6.2.2: fractional error < 1.2e-7, ample for a display value.
+  const z = Math.abs(x), t = 2 / (2 + z);
+  const ty = 4 * t - 2;
+  const cof = [-1.3026537197817094, 6.4196979235649026e-1, 1.9476473204185836e-2,
+    -9.561514786808631e-3, -9.46595344482036e-4, 3.66839497852761e-4, 4.2523324806907e-5,
+    -2.0278578112534e-5, -1.624290004647e-6, 1.303655835580e-6, 1.5626441722e-8, -8.5238095915e-8,
+    6.529054439e-9, 5.059343495e-9, -9.91364156e-10, -2.27365122e-10, 9.6467911e-11];
+  let d = 0, dd = 0;
+  for (let j = cof.length - 1; j > 0; j--) { const tmp = d; d = ty * d - dd + cof[j]; dd = tmp; }
+  const ans = t * Math.exp(-z * z + 0.5 * (cof[0] + ty * d) - dd);
+  return x >= 0 ? ans : 2 - ans;
+}
+</script>
+</body>
+</html>
