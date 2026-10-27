@@ -1,30 +1,12 @@
-# Assay — detecting model substitution with per-request internal receipts
+# Assay — an audit spot-check for the API model you actually got
 
-[![tests](https://github.com/NagaYu/assay/actions/workflows/ci.yml/badge.svg)](https://github.com/NagaYu/assay/actions/workflows/ci.yml)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
-[![demo](https://img.shields.io/badge/%F0%9F%A4%97-demo-yellow.svg)](https://huggingface.co/spaces/NagaYu/assay-demo)
-[![dataset](https://img.shields.io/badge/%F0%9F%A4%97-receipt%20corpus-yellow.svg)](https://huggingface.co/datasets/NagaYu/assay-receipts)
+**You pay for one model; the provider can quietly serve a cheaper one. Assay is a spot-check that catches the swap on ordinary traffic — no canary queries, nothing for the provider to recognise and answer honestly.**
 
-> **Catch subtle and evasive model swaps in fewer queries than an external
-> black-box audit.** Every response ships a signed, low-dimensional sketch of its
-> `hidden_states` (an *internal receipt*); a verifier checks it by recomputing only a
-> small, secretly-chosen slice — **0.74× a full recompute**, measured. Coverage is
-> **100%** by construction — there is no "request the audit happened to miss."
+Every response ships a signed, low-dimensional sketch of its hidden states (an *internal receipt*). A verifier holding the real model's weights spot-checks a receipt by recomputing one secretly-chosen layer — a **partial recompute measured at 0.74× the cost of a full one (layer-token ratio; 0.93× by wall clock)** — and accumulates the evidence sequentially, so the audit is valid whenever you look at it. Coverage is **100% by construction**: there is no "request the audit happened to miss."
 
-A research prototype for detecting **model substitution**: an inference provider
-that advertises a real model **M** but quietly serves a cheaper **M'** (a smaller
-model, or a lower-precision quantization) on some or all requests. Assay flags this
-*per request*, and stays robust to the two attacks that defeat external audits —
-**randomized** substitution and **canary-aware evasion** — as well as to a third that
-defeats naive internal receipts: a provider that serves M' text under a **genuine M
-receipt** (see [the attack a sketch alone cannot see](#the-attack-a-sketch-alone-cannot-see)).
+Measured on the default CPU pair (gpt2 vs. distilgpt2 / INT8 fake-quant), requests to detection: full substitution **1**, quantization swap **1**, randomized substitution **11**, canary-aware evasion **1**, receipt forgery **3**. An interleaved black-box audit detected none of the randomized or evasive cases within its budget.
 
-> ⚠️ Research prototype, not a production security system. The TEE is simulated with a
-> plain signature and the "cheap model" is a CPU stand-in — see
-> [Limitations and honest caveats](#limitations-and-honest-caveats).
-
----
+The cost premise, stated plainly: verification is a constant-factor saving, not an asymptotic one — the verifier still runs the layers below the one it checks, and a deep-checked request costs at most one full recompute. Research prototype: the TEE is simulated with a plain signature, the benchmark pair runs on CPU, and an independent-calibration run produced 1 sequential false alarm in 40 honest runs against a nominal α = 1% (see Limitations).
 
 ## Threat model
 
